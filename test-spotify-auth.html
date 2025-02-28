@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Spotify Auth Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        button {
+            padding: 10px 15px;
+            margin: 10px 0;
+            background-color: #1DB954;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            display: block;
+        }
+        button:hover {
+            background-color: #1ed760;
+        }
+        pre {
+            background-color: #f4f4f4;
+            padding: 10px;
+            border-radius: 4px;
+            overflow-x: auto;
+        }
+    </style>
+</head>
+<body>
+    <h1>Spotify Authorization Test</h1>
+    
+    <h2>Test Different Redirect URIs</h2>
+    
+    <button onclick="testAuth('http://localhost:3000/callback')">
+        Test with http://localhost:3000/callback
+    </button>
+    
+    <button onclick="testAuth('http://localhost:5173/callback')">
+        Test with http://localhost:5173/callback
+    </button>
+    
+    <button onclick="testAuth('http://localhost:4000/callback')">
+        Test with http://localhost:4000/callback
+    </button>
+    
+    <h2>Current Configuration</h2>
+    <pre>
+Client ID: 7caca26fddb04f839798d006bb455c80
+Redirect URI in .env: http://localhost:3000/callback
+    </pre>
+    
+    <h2>Results</h2>
+    <div id="results">
+        <p>Click a button above to test authorization.</p>
+    </div>
+    
+    <script>
+        function testAuth(redirectUri) {
+            const clientId = '7caca26fddb04f839798d006bb455c80';
+            const scopes = 'user-read-private user-read-email';
+            const state = 'test_' + Math.random().toString(36).substring(2, 15);
+            
+            const authUrl = `https://accounts.spotify.com/authorize?client_id=${clientId}&response_type=code&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent(scopes)}&state=${state}`;
+            
+            document.getElementById('results').innerHTML = `
+                <p>Testing with redirect URI: <strong>${redirectUri}</strong></p>
+                <p>Authorization URL:</p>
+                <pre>${authUrl}</pre>
+                <p>Opening authorization URL in a new tab...</p>
+            `;
+            
+            window.open(authUrl, '_blank');
+        }
+    </script>
+</body>
+</html> 
