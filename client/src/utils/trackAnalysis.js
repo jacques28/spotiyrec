@@ -87,66 +87,159 @@ export const analyzeTrackCharacteristics = (features) => {
 };
 
 /**
- * Identifies the most engaging segments in a track based on audio analysis
- * 
- * @param {Object} analysis - Audio analysis from Spotify API
- * @param {Object} features - Audio features from Spotify API
- * @returns {Array} Array of highlight segments with start times and durations
+ * Find the most engaging segments of a track based on audio analysis
+ * @param {Object} analysis - The audio analysis data from Spotify API
+ * @param {Object} features - The audio features data from Spotify API
+ * @param {Object} options - Options for highlight detection
+ * @returns {Array} - Array of highlight segments with start time and duration
  */
-export const findHighlightSegments = (analysis, features) => {
-  if (!analysis || !analysis.sections || !features) {
-    return [];
+export const findHighlightSegments = (analysis, features, options = {}) => {
+  // Default options
+  const {
+    maxHighlights = 3,
+    minDuration = 20,
+    maxDuration = 30,
+    minSegmentScore = 0.6
+  } = options;
+  
+  // Check if we have limited data (e.g., from a free Spotify account)
+  const isLimited = analysis?._limited || features?._limited;
+  
+  // If we have limited data or missing analysis, create a default highlight
+  if (isLimited || !analysis || !features || !analysis.sections || analysis.sections.length === 0) {
+    console.log('Limited data available for highlight detection, using fallback method');
+    
+    // Create a default highlight at the beginning of the track
+    return [{
+      start: 0,
+      duration: 30,
+      energy: features?.energy || 0.5,
+      loudness: features?.loudness || -10,
+      tempo: features?.tempo || 120,
+      score: 0.7,
+      reason: 'Preview segment'
+    }];
   }
   
-  // Score each section based on various factors
-  const scoredSections = analysis.sections.map(section => {
-    // Calculate a score based on energy, loudness, and confidence
-    let score = 0;
+  try {
+    // Get track sections from analysis
+    const { sections, segments, track } = analysis;
     
-    // Loudness factor (normalized relative to track's average loudness)
-    const loudnessFactor = (section.loudness - analysis.track.loudness_max) / 10;
-    score += Math.min(Math.max(loudnessFactor, -1), 1) + 1; // Range: 0-2
+    // Calculate section scores based on energy, loudness, and tempo
+    const sectionScores = sections.map(section => {
+      // Calculate base score from section properties
+      const energyScore = section.energy * 1.2; // Weight energy more heavily
+      const loudnessScore = Math.min(1, Math.max(0, (section.loudness + 30) / 30)); // Normalize loudness
+      const tempoScore = Math.min(1, section.tempo / 160); // Normalize tempo
+      
+      // Calculate section density (number of segments per second)
+      const sectionSegments = segments.filter(seg => 
+        seg.start >= section.start && seg.start < (section.start + section.duration)
+      );
+      const segmentDensity = sectionSegments.length / section.duration;
+      const densityScore = Math.min(1, segmentDensity / 5); // Normalize density
+      
+      // Combine scores with weights
+      const score = (
+        energyScore * 0.4 + 
+        loudnessScore * 0.3 + 
+        tempoScore * 0.2 + 
+        densityScore * 0.1
+      );
+      
+      return {
+        start: section.start,
+        duration: section.duration,
+        energy: section.energy,
+        loudness: section.loudness,
+        tempo: section.tempo,
+        score,
+        reason: score > 0.8 ? 'High energy section' : 
+                loudnessScore > 0.8 ? 'Prominent, loud section' : 
+                tempoScore > 0.8 ? 'Fast-paced section' : 
+                'Key musical moment'
+      };
+    });
     
-    // Energy factor
-    score += section.energy * 2; // Range: 0-2
+    // Sort sections by score (descending)
+    const sortedSections = [...sectionScores].sort((a, b) => b.score - a.score);
     
-    // Duration factor (prefer sections between 20-40 seconds)
-    const durationScore = section.duration >= 20 && section.duration <= 40 ? 1 : 
-                          section.duration > 40 ? 0.5 : 
-                          section.duration < 10 ? 0 : 0.5;
-    score += durationScore;
+    // Filter sections that meet minimum criteria
+    const candidateSections = sortedSections.filter(section => 
+      section.score >= minSegmentScore && section.duration >= minDuration
+    );
     
-    // Confidence factor
-    score += section.confidence;
-    
-    // Bonus for chorus-like sections (high energy + high loudness)
-    if (section.energy > 0.8 && loudnessFactor > 0) {
-      score += 1;
+    // If no sections meet criteria, use the highest scoring section
+    if (candidateSections.length === 0 && sortedSections.length > 0) {
+      const bestSection = sortedSections[0];
+      
+      // Ensure minimum duration
+      const adjustedDuration = Math.min(
+        Math.max(bestSection.duration, minDuration),
+        maxDuration
+      );
+      
+      return [{
+        ...bestSection,
+        duration: adjustedDuration
+      }];
     }
     
-    // Bonus for danceable sections in danceable tracks
-    if (features.danceability > 0.7 && section.tempo > 100) {
-      score += 0.5;
+    // Select top N non-overlapping sections
+    const selectedHighlights = [];
+    
+    for (const section of candidateSections) {
+      // Skip if we already have enough highlights
+      if (selectedHighlights.length >= maxHighlights) break;
+      
+      // Adjust duration to be within limits
+      const adjustedDuration = Math.min(section.duration, maxDuration);
+      
+      // Check for overlap with existing highlights
+      const overlaps = selectedHighlights.some(highlight => {
+        const highlightEnd = highlight.start + highlight.duration;
+        const sectionEnd = section.start + adjustedDuration;
+        
+        return (
+          (section.start >= highlight.start && section.start < highlightEnd) ||
+          (sectionEnd > highlight.start && sectionEnd <= highlightEnd) ||
+          (section.start <= highlight.start && sectionEnd >= highlightEnd)
+        );
+      });
+      
+      // Add if no overlap
+      if (!overlaps) {
+        selectedHighlights.push({
+          ...section,
+          duration: adjustedDuration
+        });
+      }
     }
     
-    return {
-      ...section,
-      score
-    };
-  });
-  
-  // Sort sections by score (descending)
-  const sortedSections = [...scoredSections].sort((a, b) => b.score - a.score);
-  
-  // Take top 3 sections as highlights
-  return sortedSections.slice(0, 3).map(section => ({
-    start: Math.round(section.start),
-    duration: Math.min(Math.round(section.duration), 30), // Cap at 30 seconds
-    score: section.score,
-    energy: section.energy,
-    tempo: section.tempo,
-    loudness: section.loudness
-  }));
+    // If we couldn't find non-overlapping sections, just take the top N
+    if (selectedHighlights.length === 0 && sortedSections.length > 0) {
+      return sortedSections.slice(0, maxHighlights).map(section => ({
+        ...section,
+        duration: Math.min(section.duration, maxDuration)
+      }));
+    }
+    
+    // Sort highlights by start time
+    return selectedHighlights.sort((a, b) => a.start - b.start);
+  } catch (error) {
+    console.error('Error finding highlight segments:', error);
+    
+    // Return a default highlight as fallback
+    return [{
+      start: 0,
+      duration: 30,
+      energy: features?.energy || 0.5,
+      loudness: features?.loudness || -10,
+      tempo: features?.tempo || 120,
+      score: 0.7,
+      reason: 'Preview segment'
+    }];
+  }
 };
 
 /**

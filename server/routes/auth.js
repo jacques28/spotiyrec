@@ -78,11 +78,12 @@ router.post('/exchange', async (req, res) => {
   const { code } = req.body;
   
   if (!code) {
+    console.error('No authorization code provided');
     return res.status(400).json({ error: 'Authorization code is required' });
   }
   
   try {
-    console.log('Exchanging authorization code for tokens');
+    console.log(`Exchanging authorization code for tokens: ${code.substring(0, 10)}...`);
     
     // Create a new instance with the same credentials
     const exchangeApi = new SpotifyWebApi({
@@ -94,18 +95,52 @@ router.post('/exchange', async (req, res) => {
     // Exchange authorization code for access token
     const data = await exchangeApi.authorizationCodeGrant(code);
     
+    if (!data || !data.body) {
+      throw new Error('Invalid response from Spotify API');
+    }
+    
     const { access_token, refresh_token, expires_in } = data.body;
-    console.log('Token exchange successful');
+    
+    if (!access_token) {
+      throw new Error('No access token received from Spotify');
+    }
+    
+    console.log(`Token exchange successful. Access token: ${access_token.substring(0, 10)}...`);
+    console.log(`Account type: ${data.body.scope?.includes('user-read-private') ? 'Premium' : 'Free'}`);
     
     // Return tokens as JSON
     res.json({
       access_token,
       refresh_token,
-      expires_in
+      expires_in,
+      account_type: data.body.scope?.includes('user-read-private') ? 'premium' : 'free'
     });
   } catch (err) {
-    console.error('Error exchanging code for tokens:', err);
-    res.status(500).json({ error: 'Failed to exchange code for tokens' });
+    console.error('Error exchanging code for tokens:', err.message);
+    console.error('Error details:', err.body || err);
+    
+    // Check for specific error types
+    if (err.body && err.body.error === 'invalid_grant') {
+      return res.status(400).json({ 
+        error: 'Invalid authorization code',
+        message: 'The authorization code has expired or has already been used',
+        code: 'invalid_grant'
+      });
+    }
+    
+    // Send more detailed error information
+    if (err.statusCode) {
+      return res.status(err.statusCode).json({ 
+        error: 'Failed to exchange code for tokens',
+        message: err.message,
+        statusCode: err.statusCode
+      });
+    }
+    
+    res.status(500).json({ 
+      error: 'Failed to exchange code for tokens',
+      message: err.message
+    });
   }
 });
 
@@ -117,23 +152,63 @@ router.post('/refresh', async (req, res) => {
     return res.status(400).json({ error: 'Refresh token is required' });
   }
   
-  // Create new instance with refresh token
-  const refreshSpotifyApi = new SpotifyWebApi({
-    ...credentials,
-    refreshToken
-  });
-  
   try {
-    const data = await refreshSpotifyApi.refreshAccessToken();
+    console.log('Refreshing access token...');
+    
+    // Create a new instance with the same credentials
+    const refreshApi = new SpotifyWebApi({
+      clientId: process.env.CLIENT_ID,
+      clientSecret: process.env.CLIENT_SECRET,
+      redirectUri: process.env.REDIRECT_URI,
+      refreshToken
+    });
+    
+    // Refresh the access token
+    const data = await refreshApi.refreshAccessToken();
+    
+    if (!data || !data.body) {
+      throw new Error('Invalid response from Spotify API');
+    }
+    
     const { access_token, expires_in } = data.body;
     
+    if (!access_token) {
+      throw new Error('No access token received from Spotify');
+    }
+    
+    console.log(`Token refresh successful. New access token: ${access_token.substring(0, 10)}...`);
+    
+    // Return the new access token and expiry
     res.json({
       accessToken: access_token,
       expiresIn: expires_in
     });
   } catch (err) {
-    console.error('Error refreshing token:', err);
-    res.status(500).json({ error: 'Failed to refresh token' });
+    console.error('Error refreshing access token:', err.message);
+    console.error('Error details:', err.body || err);
+    
+    // Check for specific error types
+    if (err.body && err.body.error === 'invalid_grant') {
+      return res.status(400).json({ 
+        error: 'Invalid refresh token',
+        message: 'The refresh token has expired or is invalid',
+        code: 'invalid_grant'
+      });
+    }
+    
+    // Send more detailed error information
+    if (err.statusCode) {
+      return res.status(err.statusCode).json({ 
+        error: 'Failed to refresh access token',
+        message: err.message,
+        statusCode: err.statusCode
+      });
+    }
+    
+    res.status(500).json({ 
+      error: 'Failed to refresh access token',
+      message: err.message
+    });
   }
 });
 

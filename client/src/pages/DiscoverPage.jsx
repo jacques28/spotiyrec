@@ -40,6 +40,7 @@ const DiscoverPage = () => {
   const [searchResults, setSearchResults] = useState([]);
   const [newReleases, setNewReleases] = useState([]);
   const [featuredPlaylists, setFeaturedPlaylists] = useState([]);
+  const [featuredPlaylistsMessage, setFeaturedPlaylistsMessage] = useState('');
   const [topArtists, setTopArtists] = useState([]);
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchError, setSearchError] = useState(null);
@@ -59,7 +60,19 @@ const DiscoverPage = () => {
         
         // Get featured playlists - now with error handling in the hook
         const playlistsResponse = await getFeaturedPlaylists({ limit: 6 });
-        setFeaturedPlaylists(playlistsResponse.playlists.items);
+        console.log('Featured playlists response:', playlistsResponse);
+        
+        if (playlistsResponse && playlistsResponse.playlists) {
+          setFeaturedPlaylists(playlistsResponse.playlists.items || []);
+          // Store the message if available
+          if (playlistsResponse.message) {
+            setFeaturedPlaylistsMessage(playlistsResponse.message);
+          }
+        } else {
+          console.warn('Featured playlists response was invalid:', playlistsResponse);
+          setFeaturedPlaylists([]);
+          setFeaturedPlaylistsMessage('Featured playlists are not available at this time.');
+        }
         
         // Get user's top artists - with fallback
         try {
@@ -263,27 +276,34 @@ const DiscoverPage = () => {
                   ))}
                 </SimpleGrid>
               ) : featuredPlaylists.length > 0 ? (
-                <SimpleGrid columns={{ base: 1, sm: 2, md: 3, lg: 4 }} spacing={6}>
-                  {featuredPlaylists.map(playlist => (
-                    <AlbumCard 
-                      key={playlist.id} 
-                      album={{
-                        id: playlist.id,
-                        name: playlist.name,
-                        images: playlist.images,
-                        artists: [{ name: playlist.owner.display_name }],
-                        type: 'playlist'
-                      }} 
-                    />
-                  ))}
-                </SimpleGrid>
+                <>
+                  {featuredPlaylistsMessage && (
+                    <Heading as="h3" size="md" mb={4}>
+                      {featuredPlaylistsMessage}
+                    </Heading>
+                  )}
+                  <SimpleGrid columns={{ base: 1, sm: 2, md: 3, lg: 4 }} spacing={6}>
+                    {featuredPlaylists.map(playlist => (
+                      <AlbumCard 
+                        key={playlist.id} 
+                        album={{
+                          id: playlist.id,
+                          name: playlist.name,
+                          images: playlist.images,
+                          artists: [{ name: playlist.owner.display_name }],
+                          type: 'playlist'
+                        }} 
+                      />
+                    ))}
+                  </SimpleGrid>
+                </>
               ) : (
                 <Box textAlign="center" py={10} bg={bgColor} borderRadius="lg" p={6}>
                   <Heading as="h3" size="md" mb={4}>
                     Featured Playlists Not Available
                   </Heading>
                   <Text mb={4}>
-                    Featured playlists might not be available in your region or with your current Spotify account type.
+                    {featuredPlaylistsMessage || 'Featured playlists might not be available in your region or with your current Spotify account type.'}
                   </Text>
                   <Text>
                     Try exploring New Releases or search for specific albums instead.

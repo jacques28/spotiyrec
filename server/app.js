@@ -10,6 +10,7 @@ import { fileURLToPath } from 'url';
 // Import routes
 import authRoutes from './routes/auth.js';
 import apiRoutes from './routes/api.js';
+import appleMusicRoutes from './routes/apple-music.js';
 
 // Load environment variables
 dotenv.config();
@@ -46,6 +47,7 @@ app.use(session({
 // Routes
 app.use('/auth', authRoutes);
 app.use('/api', apiRoutes);
+app.use('/apple-music', appleMusicRoutes);
 
 // Serve static files in production
 if (process.env.NODE_ENV === 'production') {

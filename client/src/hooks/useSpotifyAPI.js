@@ -3,12 +3,18 @@ import { useSpotify } from '../context/SpotifyContext';
 
 // Custom hook for handling Spotify API requests with loading and error states
 const useSpotifyAPI = () => {
-  const { spotifyApi } = useSpotify();
+  const { spotifyApi, refreshAccessToken, isAuthenticated } = useSpotify();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
-  // Generic function to make API calls
+  // Generic function to make API calls with retry logic
   const apiCall = useCallback(async (apiMethod, ...args) => {
+    if (!isAuthenticated) {
+      console.error('Not authenticated for API call');
+      setError('Authentication required');
+      throw new Error('Authentication required');
+    }
+    
     setLoading(true);
     setError(null);
     
@@ -18,11 +24,36 @@ const useSpotifyAPI = () => {
       return result;
     } catch (err) {
       console.error('Spotify API Error:', err);
+      
+      // Check if error is due to authorization issues
+      const isAuthError = err.status === 401 || 
+                         (err.message && err.message.includes('token')) ||
+                         (err.message && err.message.includes('authorization'));
+      
+      if (isAuthError && refreshAccessToken) {
+        try {
+          // Try to refresh the token and retry the API call
+          console.log('Attempting to refresh token and retry API call');
+          await refreshAccessToken();
+          
+          // Retry the API call
+          const result = await apiMethod.apply(spotifyApi, args);
+          setLoading(false);
+          return result;
+        } catch (retryErr) {
+          console.error('Retry failed after token refresh:', retryErr);
+          setError('Authentication failed. Please log in again.');
+          setLoading(false);
+          throw retryErr;
+        }
+      }
+      
+      // For non-auth errors or if retry failed
       setError(err.message || 'An error occurred with the Spotify API');
       setLoading(false);
       throw err;
     }
-  }, [spotifyApi]);
+  }, [spotifyApi, refreshAccessToken, isAuthenticated]);
 
   // Get user's saved albums
   const getUserAlbums = useCallback(async (options = {}) => {
@@ -41,7 +72,29 @@ const useSpotifyAPI = () => {
 
   // Get track audio features (for highlight detection)
   const getAudioFeatures = useCallback(async (trackId) => {
-    return apiCall(spotifyApi.getAudioFeaturesForTrack, trackId);
+    try {
+      return await apiCall(spotifyApi.getAudioFeaturesForTrack, trackId);
+    } catch (err) {
+      console.error('Error getting audio features:', err);
+      
+      // If we get a 403 error, it's likely due to API limitations for free accounts
+      if (err.status === 403) {
+        return {
+          // Return default values that won't break the app
+          energy: 0.5,
+          danceability: 0.5,
+          valence: 0.5,
+          acousticness: 0.5,
+          instrumentalness: 0.5,
+          tempo: 120,
+          loudness: -10,
+          _limited: true // Flag to indicate this is limited data
+        };
+      }
+      
+      // For other errors, rethrow
+      throw err;
+    }
   }, [apiCall, spotifyApi]);
 
   // Get multiple tracks' audio features
@@ -51,7 +104,31 @@ const useSpotifyAPI = () => {
 
   // Get track audio analysis (for detailed timing information)
   const getAudioAnalysis = useCallback(async (trackId) => {
-    return apiCall(spotifyApi.getAudioAnalysisForTrack, trackId);
+    try {
+      return await apiCall(spotifyApi.getAudioAnalysisForTrack, trackId);
+    } catch (err) {
+      console.error('Error getting audio analysis:', err);
+      
+      // If we get a 403 error, it's likely due to API limitations for free accounts
+      if (err.status === 403) {
+        return {
+          // Return minimal structure that won't break the app
+          sections: [],
+          segments: [],
+          beats: [],
+          bars: [],
+          tatums: [],
+          track: {
+            duration: 0,
+            tempo: 120
+          },
+          _limited: true // Flag to indicate this is limited data
+        };
+      }
+      
+      // For other errors, rethrow
+      throw err;
+    }
   }, [apiCall, spotifyApi]);
 
   // Search for albums
@@ -76,18 +153,49 @@ const useSpotifyAPI = () => {
       const optionsWithMarket = {
         ...options,
         country: options.country || 'US', // Default to US market
-        locale: options.locale || 'en_US' // Add locale parameter
+        locale: options.locale || 'en_US', // Add locale parameter
+        limit: options.limit || 10 // Reduce limit to avoid rate limiting
       };
       
-      return await apiCall(spotifyApi.getFeaturedPlaylists, optionsWithMarket);
+      console.log(`Attempting to fetch featured playlists with options:`, optionsWithMarket);
+      
+      // Try to get featured playlists
+      const response = await apiCall(spotifyApi.getFeaturedPlaylists, optionsWithMarket);
+      console.log('Successfully fetched featured playlists');
+      return response;
     } catch (err) {
       console.error('Error getting featured playlists:', err);
-      // Return a structured empty response instead of throwing
+      
+      // Check for specific error types
+      if (err.status === 404) {
+        console.log('Featured playlists returned 404 - likely due to regional restrictions or account type');
+        // Return a structured empty response with a helpful message
+        return {
+          playlists: {
+            items: [],
+            total: 0,
+            limit: options.limit || 10,
+            offset: options.offset || 0,
+            href: null,
+            next: null,
+            previous: null
+          },
+          message: 'Featured playlists are not available in your region or with your account type. This is normal for some Spotify accounts.'
+        };
+      }
+      
+      // For other errors, return a generic empty response
       return {
         playlists: {
-          items: []
+          items: [],
+          total: 0,
+          limit: options.limit || 10,
+          offset: options.offset || 0,
+          href: null,
+          next: null,
+          previous: null
         },
-        message: 'Featured playlists not available'
+        message: `Unable to load featured playlists (${err.status || 'unknown error'}). Please try again later.`
       };
     }
   }, [apiCall, spotifyApi]);
@@ -122,13 +230,36 @@ const useSpotifyAPI = () => {
         getAudioAnalysis(trackId)
       ]);
       
-      return { features, analysis };
+      // Check if either result is limited (403 error fallback)
+      const isLimited = features._limited || analysis._limited;
+      
+      return { 
+        features, 
+        analysis,
+        limited: isLimited // Add a flag to indicate if this is limited data
+      };
     } catch (err) {
       console.error('Error getting track analysis:', err);
-      setError('Failed to analyze track');
-      throw err;
+      
+      // Return a minimal structure that won't break the app
+      return {
+        features: {
+          energy: 0.5,
+          danceability: 0.5,
+          valence: 0.5,
+          acousticness: 0.5,
+          instrumentalness: 0.5
+        },
+        analysis: {
+          sections: [],
+          segments: [],
+          beats: [],
+          bars: []
+        },
+        limited: true // This is limited data
+      };
     }
-  }, [getAudioFeatures, getAudioAnalysis, setError]);
+  }, [getAudioFeatures, getAudioAnalysis]);
 
   // Get personalized track recommendations
   const getTrackRecommendations = useCallback(async (trackId) => {
@@ -156,7 +287,20 @@ const useSpotifyAPI = () => {
   const detectHighlights = useCallback(async (trackId) => {
     try {
       // Get both audio features and analysis
-      const { features, analysis } = await getTrackAnalysis(trackId);
+      const { features, analysis, limited } = await getTrackAnalysis(trackId);
+      
+      // If we have limited data, return a default highlight
+      if (limited || !analysis.sections || analysis.sections.length === 0) {
+        console.log('Using fallback highlights due to limited data');
+        // Return a default highlight at the beginning of the track
+        return [{
+          start: 0,
+          duration: 30,
+          confidence: 1.0,
+          loudness: -10,
+          tempo: 120
+        }];
+      }
       
       // Extract sections with high energy and danceability
       const highlights = analysis.sections
@@ -177,14 +321,32 @@ const useSpotifyAPI = () => {
         }))
         .sort((a, b) => b.loudness - a.loudness); // Sort by loudness (descending)
       
+      // If no highlights found, use the first section
+      if (highlights.length === 0 && analysis.sections.length > 0) {
+        const firstSection = analysis.sections[0];
+        highlights.push({
+          start: firstSection.start,
+          duration: Math.min(firstSection.duration, 30),
+          confidence: firstSection.confidence,
+          loudness: firstSection.loudness,
+          tempo: firstSection.tempo
+        });
+      }
+      
       // Return the top 3 highlights or all if less than 3
       return highlights.slice(0, 3);
     } catch (err) {
       console.error('Error detecting highlights:', err);
-      setError('Failed to detect highlights');
-      return [];
+      // Return a default highlight at the beginning of the track
+      return [{
+        start: 0,
+        duration: 30,
+        confidence: 1.0,
+        loudness: -10,
+        tempo: 120
+      }];
     }
-  }, [getTrackAnalysis, setError]);
+  }, [getTrackAnalysis]);
 
   // Get similar tracks based on audio features
   const getSimilarTracks = useCallback(async (trackId) => {
@@ -212,6 +374,40 @@ const useSpotifyAPI = () => {
     }
   }, [getAudioFeatures, getRecommendations]);
 
+  // Check if albums are saved in the user's library
+  const checkSavedAlbums = useCallback(async (albumIds) => {
+    try {
+      // First, we need to check if the albums are in the user's library
+      // Spotify doesn't have a direct API for this, so we'll check if any tracks from the album are saved
+      const response = await apiCall(spotifyApi.containsMySavedAlbums, albumIds);
+      return response;
+    } catch (err) {
+      console.error('Error checking saved albums:', err);
+      // Return a default response (all false) to avoid breaking the UI
+      return albumIds.map(() => false);
+    }
+  }, [apiCall, spotifyApi]);
+
+  // Save albums to the user's library
+  const saveAlbums = useCallback(async (albumIds) => {
+    try {
+      return await apiCall(spotifyApi.addToMySavedAlbums, albumIds);
+    } catch (err) {
+      console.error('Error saving albums:', err);
+      throw err;
+    }
+  }, [apiCall, spotifyApi]);
+
+  // Remove albums from the user's library
+  const removeAlbums = useCallback(async (albumIds) => {
+    try {
+      return await apiCall(spotifyApi.removeFromMySavedAlbums, albumIds);
+    } catch (err) {
+      console.error('Error removing albums:', err);
+      throw err;
+    }
+  }, [apiCall, spotifyApi]);
+
   return {
     loading,
     error,
@@ -230,7 +426,10 @@ const useSpotifyAPI = () => {
     detectHighlights,
     getTrackAnalysis,
     getTrackRecommendations,
-    getSimilarTracks
+    getSimilarTracks,
+    checkSavedAlbums,
+    saveAlbums,
+    removeAlbums
   };
 };
 

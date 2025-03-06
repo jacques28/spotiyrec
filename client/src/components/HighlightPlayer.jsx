@@ -15,7 +15,9 @@ import {
   VStack,
   Badge,
   Divider,
-  Icon
+  Icon,
+  Alert,
+  AlertIcon
 } from '@chakra-ui/react';
 import { 
   FaPlay, 
@@ -61,10 +63,12 @@ const HighlightPlayer = ({ track, highlights, onNext, onPrevious }) => {
     
     // Set up event listeners
     audio.addEventListener('loadedmetadata', () => {
+      console.log(`Audio loaded: duration = ${audio.duration}s`);
       setDuration(audio.duration);
     });
     
     audio.addEventListener('ended', () => {
+      console.log('Audio playback ended');
       setIsPlaying(false);
       setCurrentTime(0);
       
@@ -80,6 +84,11 @@ const HighlightPlayer = ({ track, highlights, onNext, onPrevious }) => {
       } else if (onNext) {
         onNext();
       }
+    });
+    
+    audio.addEventListener('error', (e) => {
+      console.error('Audio playback error:', e);
+      setIsPlaying(false);
     });
     
     // Set volume
@@ -100,7 +109,28 @@ const HighlightPlayer = ({ track, highlights, onNext, onPrevious }) => {
   
   // Generate highlight descriptions when highlights change
   useEffect(() => {
-    if (!highlights || highlights.length === 0) return;
+    if (!highlights || highlights.length === 0) {
+      // If no highlights are provided, create a default one for the whole preview
+      if (track && track.preview_url) {
+        const defaultHighlight = {
+          start: 0,
+          duration: 30,
+          energy: 0.5,
+          loudness: -10,
+          tempo: 120
+        };
+        
+        setHighlightInfo([{
+          index: 0,
+          highlight: defaultHighlight,
+          description: 'Preview',
+          timeRange: '0:00 - 0:30'
+        }]);
+        
+        setCurrentHighlight(defaultHighlight);
+      }
+      return;
+    }
     
     // Generate descriptions for each highlight
     const descriptions = highlights.map((highlight, index) => {
@@ -135,22 +165,40 @@ const HighlightPlayer = ({ track, highlights, onNext, onPrevious }) => {
     if (!currentHighlight && highlights.length > 0) {
       setCurrentHighlight(highlights[0]);
     }
-  }, [highlights, currentHighlight]);
+  }, [highlights, track, currentHighlight]);
   
   // Handle play/pause
   const togglePlay = () => {
-    if (!audioRef.current) return;
+    if (!audioRef.current) {
+      console.error('No audio element available');
+      return;
+    }
     
     if (isPlaying) {
+      console.log('Pausing audio playback');
       audioRef.current.pause();
       clearInterval(progressIntervalRef.current);
     } else {
-      audioRef.current.play();
+      console.log('Starting audio playback');
+      const playPromise = audioRef.current.play();
       
-      // Update progress
-      progressIntervalRef.current = setInterval(() => {
-        setCurrentTime(audioRef.current.currentTime);
-      }, 1000);
+      if (playPromise !== undefined) {
+        playPromise.then(() => {
+          console.log('Audio playback started successfully');
+          // Update progress
+          progressIntervalRef.current = setInterval(() => {
+            if (audioRef.current) {
+              setCurrentTime(audioRef.current.currentTime);
+            }
+          }, 1000);
+        }).catch(error => {
+          console.error('Error starting audio playback:', error);
+          // Handle autoplay restrictions
+          if (error.name === 'NotAllowedError') {
+            console.warn('Autoplay prevented by browser. User interaction required.');
+          }
+        });
+      }
     }
     
     setIsPlaying(!isPlaying);
@@ -183,7 +231,7 @@ const HighlightPlayer = ({ track, highlights, onNext, onPrevious }) => {
     }
   };
   
-  // Handle seek
+  // Handle seeking
   const handleSeek = (value) => {
     if (!audioRef.current) return;
     
@@ -193,13 +241,43 @@ const HighlightPlayer = ({ track, highlights, onNext, onPrevious }) => {
   
   // Play a specific highlight
   const playHighlight = (highlight) => {
-    if (!audioRef.current || !highlight) return;
+    if (!audioRef.current || !highlight) {
+      console.error('Cannot play highlight: audio element or highlight not available');
+      return;
+    }
     
+    console.log(`Playing highlight at ${highlight.start}s`);
     setCurrentHighlight(highlight);
     audioRef.current.currentTime = highlight.start;
     
     if (!isPlaying) {
       togglePlay();
+    }
+  };
+  
+  // Handle next highlight
+  const handleNextHighlight = () => {
+    if (!highlights || highlights.length <= 1 || !currentHighlight) return;
+    
+    const currentIndex = highlights.indexOf(currentHighlight);
+    if (currentIndex < highlights.length - 1) {
+      playHighlight(highlights[currentIndex + 1]);
+    } else if (onNext) {
+      // If we're at the last highlight, move to the next track
+      onNext();
+    }
+  };
+  
+  // Handle previous highlight
+  const handlePreviousHighlight = () => {
+    if (!highlights || highlights.length <= 1 || !currentHighlight) return;
+    
+    const currentIndex = highlights.indexOf(currentHighlight);
+    if (currentIndex > 0) {
+      playHighlight(highlights[currentIndex - 1]);
+    } else if (onPrevious) {
+      // If we're at the first highlight, move to the previous track
+      onPrevious();
     }
   };
   
@@ -240,7 +318,7 @@ const HighlightPlayer = ({ track, highlights, onNext, onPrevious }) => {
             </Text>
           </Box>
           
-          {currentHighlight && (
+          {currentHighlight && highlights && highlights.length > 0 && (
             <Badge colorScheme="green" p={2} borderRadius="md">
               Highlight {highlights.indexOf(currentHighlight) + 1}/{highlights.length}
             </Badge>
@@ -249,143 +327,128 @@ const HighlightPlayer = ({ track, highlights, onNext, onPrevious }) => {
         
         {/* Highlight info */}
         {currentInfo && (
-          <Box p={3} bg={useColorModeValue('gray.50', 'gray.700')} borderRadius="md">
-            <HStack mb={2}>
-              <Icon as={FaRegLightbulb} color="yellow.400" />
-              <Text fontWeight="medium">Current Highlight</Text>
-            </HStack>
-            <Text fontSize="sm">{currentInfo.description}</Text>
-            <HStack mt={2} fontSize="xs" color="gray.500">
-              <Icon as={FaMusic} />
-              <Text>Timestamp: {currentInfo.timeRange}</Text>
-              
-              {currentHighlight.energy && (
-                <>
-                  <Icon as={FaHeartbeat} ml={2} />
-                  <Text>Energy: {Math.round(currentHighlight.energy * 100)}%</Text>
-                </>
-              )}
+          <Box p={2} bg={useColorModeValue('gray.50', 'gray.700')} borderRadius="md">
+            <HStack>
+              <Icon as={FaRegLightbulb} color="yellow.500" />
+              <Text fontSize="sm" fontWeight="medium">
+                {currentInfo.description}
+              </Text>
+              <Text fontSize="sm" color="gray.500">
+                {currentInfo.timeRange}
+              </Text>
             </HStack>
           </Box>
         )}
         
+        {/* Playback controls */}
+        <HStack spacing={4} justify="center" align="center">
+          <IconButton
+            aria-label="Previous highlight"
+            icon={<FaStepBackward />}
+            onClick={handlePreviousHighlight}
+            isDisabled={!highlights || highlights.length <= 1 || !currentHighlight}
+            variant="ghost"
+          />
+          
+          <IconButton
+            aria-label={isPlaying ? "Pause" : "Play"}
+            icon={isPlaying ? <FaPause /> : <FaPlay />}
+            onClick={togglePlay}
+            isDisabled={!track || !track.preview_url}
+            colorScheme="green"
+            size="lg"
+            borderRadius="full"
+          />
+          
+          <IconButton
+            aria-label="Next highlight"
+            icon={<FaStepForward />}
+            onClick={handleNextHighlight}
+            isDisabled={!highlights || highlights.length <= 1 || !currentHighlight}
+            variant="ghost"
+          />
+        </HStack>
+        
         {/* Progress bar */}
         <Box>
           <Slider
-            aria-label="seek-slider"
+            aria-label="Progress"
             value={currentTime}
             min={0}
             max={duration || 30}
             onChange={handleSeek}
-            onMouseEnter={() => setShowTooltip(true)}
-            onMouseLeave={() => setShowTooltip(false)}
+            isDisabled={!track || !track.preview_url}
           >
             <SliderTrack>
               <SliderFilledTrack bg={progressColor} />
             </SliderTrack>
-            <Tooltip
-              hasArrow
-              bg="gray.700"
-              color="white"
-              placement="top"
-              isOpen={showTooltip}
-              label={formatTime(currentTime)}
-            >
-              <SliderThumb />
-            </Tooltip>
+            <SliderThumb boxSize={3} />
           </Slider>
           
-          <Flex justify="space-between">
-            <Text fontSize="sm" color="gray.500">
-              {formatTime(currentTime)}
-            </Text>
-            <Text fontSize="sm" color="gray.500">
-              {formatTime(duration || 30)}
-            </Text>
+          <Flex justify="space-between" fontSize="sm" color="gray.500">
+            <Text>{formatTime(currentTime)}</Text>
+            <Text>{formatTime(duration)}</Text>
           </Flex>
         </Box>
         
-        {/* Controls */}
-        <Flex justify="space-between" align="center">
-          <HStack spacing={4}>
-            <IconButton
-              aria-label="Previous track"
-              icon={<FaStepBackward />}
-              variant="ghost"
-              onClick={onPrevious}
-              isDisabled={!onPrevious}
-            />
-            
-            <IconButton
-              aria-label={isPlaying ? 'Pause' : 'Play'}
-              icon={isPlaying ? <FaPause /> : <FaPlay />}
-              colorScheme="green"
-              borderRadius="full"
-              size="lg"
-              onClick={togglePlay}
-              isDisabled={!track || !track.preview_url}
-            />
-            
-            <IconButton
-              aria-label="Next track"
-              icon={<FaStepForward />}
-              variant="ghost"
-              onClick={onNext}
-              isDisabled={!onNext}
-            />
-          </HStack>
+        {/* Volume control */}
+        <HStack spacing={2}>
+          <IconButton
+            aria-label={isMuted ? "Unmute" : "Mute"}
+            icon={isMuted ? <FaVolumeMute /> : <FaVolumeUp />}
+            onClick={toggleMute}
+            size="sm"
+            variant="ghost"
+          />
           
-          <HStack spacing={2} width="120px">
-            <IconButton
-              aria-label={isMuted ? 'Unmute' : 'Mute'}
-              icon={isMuted ? <FaVolumeMute /> : <FaVolumeUp />}
-              variant="ghost"
-              size="sm"
-              onClick={toggleMute}
-            />
-            
-            <Slider
-              aria-label="volume-slider"
-              value={isMuted ? 0 : volume}
-              min={0}
-              max={1}
-              step={0.01}
-              onChange={handleVolumeChange}
-            >
-              <SliderTrack>
-                <SliderFilledTrack bg={progressColor} />
-              </SliderTrack>
-              <SliderThumb />
-            </Slider>
-          </HStack>
-        </Flex>
+          <Slider
+            aria-label="Volume"
+            value={volume}
+            min={0}
+            max={1}
+            step={0.01}
+            onChange={handleVolumeChange}
+            width="100px"
+          >
+            <SliderTrack>
+              <SliderFilledTrack bg={progressColor} />
+            </SliderTrack>
+            <SliderThumb boxSize={2} />
+          </Slider>
+        </HStack>
         
-        {/* Highlights section */}
-        {highlights && highlights.length > 0 && (
-          <Box mt={4}>
-            <Divider mb={3} />
-            <Text fontWeight="bold" mb={2}>
-              Track Highlights
+        {/* Highlight navigation */}
+        {highlights && highlights.length > 1 && (
+          <Box mt={2}>
+            <Divider mb={2} />
+            <Text fontSize="sm" fontWeight="medium" mb={2}>
+              All Highlights
             </Text>
             <HStack spacing={2} overflowX="auto" pb={2}>
               {highlightInfo.map((info, index) => (
                 <Badge
                   key={index}
-                  px={3}
-                  py={2}
+                  colorScheme={currentHighlight === info.highlight ? "green" : "gray"}
+                  p={2}
                   borderRadius="md"
-                  colorScheme={currentHighlight === highlights[info.index] ? 'green' : 'gray'}
                   cursor="pointer"
-                  onClick={() => playHighlight(highlights[info.index])}
+                  onClick={() => playHighlight(info.highlight)}
                 >
-                  <VStack spacing={0} align="start">
-                    <Text>Highlight {info.index + 1}</Text>
-                    <Text fontSize="xs">{info.timeRange}</Text>
-                  </VStack>
+                  {info.timeRange}
                 </Badge>
               ))}
             </HStack>
           </Box>
+        )}
+        
+        {/* Error message if no preview available */}
+        {(!track || !track.preview_url) && (
+          <Alert status="warning" borderRadius="md">
+            <AlertIcon />
+            <Text fontSize="sm">
+              No preview available for this track. Try another track or check your Spotify account.
+            </Text>
+          </Alert>
         )}
       </VStack>
     </Box>
